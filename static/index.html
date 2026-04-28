@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Search Algorithms Visualiser</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #f5f6f7;
+      color: #212529;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    .site-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.75rem 1.5rem;
+      background: #ffffff;
+      border-bottom: 1px solid #dee2e6;
+    }
+    .site-header .logo {
+      width: 56px;
+      height: 56px;
+      flex-shrink: 0;
+      object-fit: contain;
+    }
+    .site-header .logo-placeholder {
+      width: 56px;
+      height: 56px;
+      flex-shrink: 0;
+      background: #e9ecef;
+      border: 1px dashed #adb5bd;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.6rem;
+      color: #adb5bd;
+      text-align: center;
+    }
+    .header-text h1 {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #212529;
+      line-height: 1.3;
+    }
+    .header-text p {
+      font-size: 0.82rem;
+      color: #6c757d;
+      margin-top: 0.2rem;
+    }
+
+    /* ── Layout ── */
+    .app {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .canvas-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 1.2rem;
+      gap: 1rem;
+    }
+
+    #grid-canvas {
+      border: 1px solid #dee2e6;
+      border-radius: 4px;
+      cursor: default;
+      display: block;
+      image-rendering: pixelated;
+    }
+    #grid-canvas.edit-mode { cursor: crosshair; }
+
+    .canvas-controls {
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .side-panel {
+      width: 300px;
+      min-width: 260px;
+      background: #ffffff;
+      border-left: 1px solid #dee2e6;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .panel-section {
+      padding: 1rem 1.2rem;
+      border-bottom: 1px solid #dee2e6;
+    }
+    .panel-section h2 {
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6c757d;
+      margin-bottom: 0.75rem;
+    }
+
+    .form-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.55rem;
+      gap: 0.5rem;
+    }
+    .form-row label {
+      font-size: 0.82rem;
+      color: #495057;
+      flex-shrink: 0;
+      min-width: 110px;
+    }
+    .form-row input[type="number"],
+    .form-row select {
+      width: 100%;
+      background: #ffffff;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      color: #212529;
+      padding: 0.3rem 0.5rem;
+      font-size: 0.82rem;
+    }
+    .form-row input[type="checkbox"] { accent-color: #0d6efd; }
+
+    .metrics-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .metrics-table td { padding: 0.3rem 0; }
+    .metrics-table td:first-child { color: #6c757d; width: 55%; }
+    .metrics-table td:last-child  { color: #0d6efd; font-weight: 600; text-align: right; }
+
+    #meta-status {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 20px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      background: #e9ecef;
+      color: #6c757d;
+      margin-top: 0.4rem;
+    }
+    #meta-status.status-found  { background: #d1e7dd; color: #0a5c36; }
+    #meta-status.status-failed { background: #f8d7da; color: #842029; }
+    #meta-status.status-running{ background: #cfe2ff; color: #084298; }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem 0.8rem;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.75rem;
+      color: #495057;
+    }
+    .swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 2px;
+      border: 1px solid rgba(0,0,0,0.12);
+      flex-shrink: 0;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.45rem 1rem;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 0.83rem;
+      font-weight: 600;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn:hover:not(:disabled) { opacity: 0.85; transform: translateY(-1px); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-primary  { background: #0d6efd; color: #fff; }
+    .btn-secondary{ background: #e9ecef; color: #495057; border-color: #ced4da; }
+    .btn-success  { background: #198754; color: #fff; }
+    .btn-danger   { background: #dc3545; color: #fff; }
+
+    /* ── Config items ── */
+    .config-item {
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      padding: 0.7rem 0.8rem;
+      margin-bottom: 0.5rem;
+    }
+    .config-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.45rem;
+    }
+    .config-num {
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: #6c757d;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .btn-remove-config {
+      background: none;
+      border: none;
+      color: #adb5bd;
+      cursor: pointer;
+      font-size: 0.78rem;
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      line-height: 1;
+    }
+    .btn-remove-config:hover { color: #dc3545; background: #f8d7da; }
+
+    /* ── Multi-canvas layout ── */
+    #canvases-container {
+      display: flex;
+      gap: 1.2rem;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: center;
+      width: 100%;
+    }
+    .canvas-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .canvas-label {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #495057;
+    }
+    .canvas-el {
+      border: 1px solid #dee2e6;
+      border-radius: 4px;
+      cursor: default;
+      display: block;
+      image-rendering: pixelated;
+    }
+    .canvas-el.edit-mode { cursor: crosshair; }
+    .canvas-metrics {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .meta-status {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 20px;
+      font-size: 0.73rem;
+      font-weight: 600;
+      background: #e9ecef;
+      color: #6c757d;
+    }
+    .meta-status.status-found   { background: #d1e7dd; color: #0a5c36; }
+    .meta-status.status-failed  { background: #f8d7da; color: #842029; }
+    .meta-status.status-running { background: #cfe2ff; color: #084298; }
+    .meta-text { font-size: 0.73rem; color: #6c757d; }
+
+    /* ── Controls grid ── */
+    .controls-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem;
+    }
+    .btn-full { grid-column: 1 / -1; }
+  </style>
+</head>
+<body>
+
+<header class="site-header">
+  <img src="/static/assets/logo.png" alt="Logo" class="logo"
+       onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+  <div class="logo-placeholder" style="display:none;">logo</div>
+  <div class="header-text">
+    <h1>Project for Search Algorithms for Planning with Bounded Suboptimality</h1>
+    <p>Author: Milan Balabanović</p>
+  </div>
+</header>
+
+<div class="app">
+
+  <div class="canvas-panel">
+    <div id="canvases-container"></div>
+  </div>
+
+  <div class="side-panel">
+
+    <div class="panel-section">
+      <h2>Configurations</h2>
+      <div id="configs-list"></div>
+      <button id="btn-add-config" class="btn btn-secondary" style="width:100%;margin-top:0.3rem;">+ Add Configuration</button>
+    </div>
+
+    <div class="panel-section">
+      <h2>Grid</h2>
+      <div class="form-row">
+        <label for="inp-rows">Rows</label>
+        <input type="number" id="inp-rows" value="15" min="5" max="40" />
+      </div>
+      <div class="form-row">
+        <label for="inp-cols">Cols</label>
+        <input type="number" id="inp-cols" value="15" min="5" max="40" />
+      </div>
+      <div class="form-row">
+        <label for="inp-density">Obstacle %</label>
+        <input type="number" id="inp-density" value="0.28" min="0.0" max="0.6" step="0.01" />
+      </div>
+      <div class="form-row" style="margin-top:0.4rem;">
+        <label for="chk-edit">Edit obstacles</label>
+        <input type="checkbox" id="chk-edit" />
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <h2>Animation Speed</h2>
+      <div class="form-row">
+        <label for="inp-speed">Speed (exp/s)</label>
+        <input type="number" id="inp-speed" min="1" max="200" step="1" value="15" />
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <h2>Controls</h2>
+      <div class="controls-grid">
+        <button id="btn-step"     class="btn btn-secondary">&#9654; Step</button>
+        <button id="btn-run"      class="btn btn-success">&#9654;&#9654; Run</button>
+        <button id="btn-stop"     class="btn btn-danger"   disabled>&#9646;&#9646; Stop</button>
+        <button id="btn-reset"    class="btn btn-secondary">&#8635; Reset</button>
+        <button id="btn-generate" class="btn btn-primary btn-full">&#10022; New Maze</button>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <h2>Legend</h2>
+      <div class="legend">
+        <div class="legend-item"><div class="swatch" style="background:#e17055"></div> Start (S)</div>
+        <div class="legend-item"><div class="swatch" style="background:#6c5ce7"></div> Goal (G)</div>
+        <div class="legend-item"><div class="swatch" style="background:#e67e22"></div> Focal list</div>
+        <div class="legend-item"><div class="swatch" style="background:#fdcb6e"></div> Open list</div>
+        <div class="legend-item"><div class="swatch" style="background:#74b9ff"></div> Closed list</div>
+        <div class="legend-item"><div class="swatch" style="background:#00b894"></div> Path found</div>
+        <div class="legend-item"><div class="swatch" style="background:#2d3436; border-color:#666"></div> Obstacle</div>
+        <div class="legend-item"><div class="swatch" style="background:#f5f5f5; border-color:#aaa"></div> Empty</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+
+</body>
+</html>

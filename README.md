@@ -76,10 +76,19 @@ Each canvas shows inline metrics once a search is running:
 | Cost     | g-value of the goal once found.                                                |
 | Ratio    | found_cost / optimal_cost (1.0 = optimal; pre-computed via A\* at generation). |
 
-## Running the benchmark
+## Use of AI
 
-```bash
-python benchmark.py                          # 10 grids, 15×15, w=1.5
-python benchmark.py --grids 50 --weight 2.0
-python benchmark.py --rows 20 --cols 20 --grids 20 --csv results.csv
-```
+**Tool used:** Claude Code as an agentic harness.
+**Usage:** Code generation only as an assistant for patterns and boilerplate. Also, for CSS and parts of the template HTML.
+
+**Tool used:** Claude Code as an agentic harness.
+**Usage:** Generation of README.md
+
+**Tool used:** Github Copilot as a code line finisher.
+**Usage:** Finishing lines of code to speed up development.
+
+**What was not delegated to AI:** Planning, architecture, choice of search algorithms, choice of heuristics, presets, algorithm creation, web application wireframe.
+
+## Note
+Some parts of the project were changed before the deadline, however were not committed on time. This includes only changes to the Web app interface and choice of heuristics.
+This is visible in the commit history.

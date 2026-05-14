@@ -11,7 +11,8 @@
       font-family: "Segoe UI", system-ui, sans-serif;
       background: #f5f6f7;
       color: #212529;
-      min-height: 100vh;
+      height: 100vh;
+      overflow: hidden;
       display: flex;
       flex-direction: column;
     }
@@ -61,11 +62,13 @@
     .app {
       display: flex;
       flex: 1;
+      min-height: 0;
       overflow: hidden;
     }
 
     .canvas-panel {
       flex: 1;
+      min-width: 0;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -93,11 +96,21 @@
     .side-panel {
       width: 300px;
       min-width: 260px;
+      flex-shrink: 0;
       background: #ffffff;
       border-left: 1px solid #dee2e6;
       display: flex;
       flex-direction: column;
       overflow-y: auto;
+    }
+
+    /* ── Header legend ── */
+    .header-legend {
+      margin-left: auto;
+      display: grid;
+      grid-template-columns: repeat(5, auto);
+      gap: 0.25rem 0.9rem;
+      align-items: center;
     }
 
     .panel-section {
@@ -282,6 +295,37 @@
     .meta-status.status-running { background: #cfe2ff; color: #084298; }
     .meta-text { font-size: 0.73rem; color: #6c757d; }
 
+    /* ── Custom heuristic tooltip ── */
+    .expr-wrap { position: relative; width: 100%; }
+    .expr-wrap input { width: 100%; }
+    .expr-tooltip {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      right: 0;
+      background: #dc3545;
+      color: #fff;
+      font-size: 0.7rem;
+      line-height: 1.35;
+      padding: 0.3rem 0.5rem;
+      border-radius: 4px;
+      z-index: 200;
+      pointer-events: none;
+    }
+    .expr-tooltip::before {
+      content: "";
+      position: absolute;
+      top: -5px;
+      left: 10px;
+      border: 5px solid transparent;
+      border-top: none;
+      border-bottom-color: #dc3545;
+    }
+    .expr-wrap.invalid input  { border-color: #dc3545; }
+    .expr-wrap.invalid .expr-tooltip { display: block; }
+    .expr-wrap.valid   input  { border-color: #198754; }
+
     /* ── Controls grid ── */
     .controls-grid {
       display: grid;
@@ -301,6 +345,18 @@
     <h1>Project for Search Algorithms for Planning with Bounded Suboptimality</h1>
     <p>Author: Milan Balabanović</p>
   </div>
+  <div class="header-legend">
+    <div class="legend-item"><div class="swatch" style="background:#e17055"></div> Start (S)</div>
+    <div class="legend-item"><div class="swatch" style="background:#6c5ce7"></div> Goal (G)</div>
+    <div class="legend-item"><div class="swatch" style="background:#e67e22"></div> Focal list</div>
+    <div class="legend-item"><div class="swatch" style="background:#fdcb6e"></div> Open list</div>
+    <div class="legend-item"><div class="swatch" style="background:#74b9ff"></div> Closed list</div>
+    <div class="legend-item"><div class="swatch" style="background:#00b894"></div> Path (shared)</div>
+    <div class="legend-item"><div class="swatch" style="background:#fab1a0"></div> Suboptimal step</div>
+    <div class="legend-item"><div class="swatch" style="background:#a29bfe"></div> Optimal only</div>
+    <div class="legend-item"><div class="swatch" style="background:#2d3436; border-color:#666"></div> Obstacle</div>
+    <div class="legend-item"><div class="swatch" style="background:#f5f5f5; border-color:#aaa"></div> Empty cell</div>
+  </div>
 </header>
 
 <div class="app">
@@ -319,6 +375,12 @@
 
     <div class="panel-section">
       <h2>Grid</h2>
+      <div class="form-row">
+        <label for="sel-preset">Preset map</label>
+        <select id="sel-preset">
+          <option value="">— Random —</option>
+        </select>
+      </div>
       <div class="form-row">
         <label for="inp-rows">Rows</label>
         <input type="number" id="inp-rows" value="15" min="5" max="40" />
@@ -356,19 +418,6 @@
       </div>
     </div>
 
-    <div class="panel-section">
-      <h2>Legend</h2>
-      <div class="legend">
-        <div class="legend-item"><div class="swatch" style="background:#e17055"></div> Start (S)</div>
-        <div class="legend-item"><div class="swatch" style="background:#6c5ce7"></div> Goal (G)</div>
-        <div class="legend-item"><div class="swatch" style="background:#e67e22"></div> Focal list</div>
-        <div class="legend-item"><div class="swatch" style="background:#fdcb6e"></div> Open list</div>
-        <div class="legend-item"><div class="swatch" style="background:#74b9ff"></div> Closed list</div>
-        <div class="legend-item"><div class="swatch" style="background:#00b894"></div> Path found</div>
-        <div class="legend-item"><div class="swatch" style="background:#2d3436; border-color:#666"></div> Obstacle</div>
-        <div class="legend-item"><div class="swatch" style="background:#f5f5f5; border-color:#aaa"></div> Empty</div>
-      </div>
-    </div>
 
   </div>
 </div>

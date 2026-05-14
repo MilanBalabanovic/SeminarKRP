@@ -1,15 +1,17 @@
 "use strict";
 
 const COLORS = {
-  EMPTY:     "#f5f5f5",
-  OBSTACLE:  "#2d3436",
-  START:     "#e17055",
-  GOAL:      "#6c5ce7",
-  FOCAL:     "#e67e22",
-  OPEN:      "#fdcb6e",
-  CLOSED:    "#74b9ff",
-  PATH:      "#00b894",
-  GRID_LINE: "#cccccc",
+  EMPTY:              "#f5f5f5",
+  OBSTACLE:           "#2d3436",
+  START:              "#e17055",
+  GOAL:               "#6c5ce7",
+  FOCAL:              "#e67e22",
+  OPEN:               "#fdcb6e",
+  CLOSED:             "#74b9ff",
+  PATH:               "#00b894",   // on both found + optimal
+  PATH_FOUND_ONLY:    "#fab1a0",   // suboptimal detour (found but not optimal)
+  PATH_OPTIMAL_ONLY:  "#a29bfe",   // optimal route not taken by this algo
+  GRID_LINE:          "#cccccc",
 };
 
 const ALGO_LABELS = {
@@ -28,24 +30,43 @@ const ALGO_OPTIONS = [
   { value: "focal",  label: "Focal Search" },
 ];
 
-// ── State ───────────────────────────────────────────────────────────────────
-let gridData    = null;
-let editMode    = false;
-let runnerTimer = null;
+const HEURISTIC_OPTIONS = [
+  { value: "manhattan", label: "Manhattan  (|dr|+|dc|)" },
+  { value: "euclidean", label: "Euclidean  (sqrt(dr²+dc²))" },
+  { value: "chebyshev", label: "Chebyshev  (max(|dr|,|dc|))" },
+  { value: "octile",    label: "Octile     (diagonal approx)" },
+  { value: "custom",    label: "Custom expression…" },
+];
 
-let configs = [
-  { algo: "wastar", weight: 1.5, hhat: 1.5 },
+const HEURISTIC_SHORT = {
+  manhattan: "Manhattan",
+  euclidean: "Euclidean",
+  chebyshev: "Chebyshev",
+  octile:    "Octile",
+  custom:    "Custom",
+};
+
+// ── State ───────────────────────────────────────────────────────────────────
+var gridData    = null;
+var editMode    = false;
+var runnerTimer = null;
+
+var configs = [
+  { algo: "wastar", weight: 1.5, hhat: 1.5, heuristic: "manhattan", customExpr: "" },
 ];
 
 // sessions[i] = { sessionId, searchState, done }
-let sessions = [];
+var sessions = [];
 
 // canvasItems[i] = { canvas, ctx, labelEl, statusEl, metaTextEl }
-let canvasItems = [];
+var canvasItems = [];
+
+// configUIRefs[i] = { showExprError(msg), clearExprError() }
+var configUIRefs = [];
 
 // ── DOM refs ────────────────────────────────────────────────────────────────
-let btnGenerate, btnReset, btnStep, btnRun, btnStop;
-let inpSpeed, chkEdit, configsList;
+var btnGenerate, btnReset, btnStep, btnRun, btnStop;
+var inpSpeed, chkEdit, configsList;
 
 // ── Init ────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", function () {
@@ -80,9 +101,48 @@ document.addEventListener("DOMContentLoaded", function () {
 
   document.getElementById("btn-add-config").addEventListener("click", addConfig);
 
+  // Load preset list and populate dropdown
+  loadPresetList();
+
   buildConfigUI();
   onGenerate();
 });
+
+// ── Preset handling ───────────────────────────────────────────────────────────
+function loadPresetList() {
+  var sel = document.getElementById("sel-preset");
+  if (!sel) return;
+  fetch("/api/grid/presets")
+    .then(function (r) { return r.json(); })
+    .then(function (presets) {
+      for (var i = 0; i < presets.length; i++) {
+        var opt = document.createElement("option");
+        opt.value       = presets[i].key;
+        opt.title       = presets[i].description;
+        opt.textContent = presets[i].label;
+        sel.appendChild(opt);
+      }
+    })
+    .catch(function () {});
+  sel.addEventListener("change", function () {
+    if (!sel.value) return;
+    onLoadPreset(sel.value);
+    sel.value = "";
+  });
+}
+
+async function onLoadPreset(key) {
+  stopRunner();
+  try {
+    gridData = await fetch("/api/grid/preset/" + key).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
+    rebuildCanvases();
+  } catch (e) {
+    alert("Preset error: " + e.message);
+  }
+}
 
 // ── Config UI ───────────────────────────────────────────────────────────────
 function needsWeight(algo) {
@@ -90,13 +150,17 @@ function needsWeight(algo) {
 }
 
 function configLabel(cfg) {
-  var base = ALGO_LABELS[cfg.algo] || cfg.algo;
-  return needsWeight(cfg.algo) ? base + " (w = " + cfg.weight + ")" : base;
+  var base   = ALGO_LABELS[cfg.algo] || cfg.algo;
+  var hShort = HEURISTIC_SHORT[cfg.heuristic] || cfg.heuristic;
+  var parts  = [];
+  if (needsWeight(cfg.algo)) parts.push("w=" + cfg.weight);
+  parts.push(hShort);
+  return base + " (" + parts.join(", ") + ")";
 }
 
 function buildConfigUI() {
   configsList.innerHTML = "";
-
+  configUIRefs = [];
   for (var i = 0; i < configs.length; i++) {
     configsList.appendChild(makeConfigItem(i));
   }
@@ -109,10 +173,9 @@ function makeConfigItem(i) {
   div.className = "config-item";
   div.setAttribute("data-index", i);
 
-  // Header row
-  var header = document.createElement("div");
+  // Header
+  var header  = document.createElement("div");
   header.className = "config-header";
-
   var numSpan = document.createElement("span");
   numSpan.className   = "config-num";
   numSpan.textContent = "Config " + (i + 1);
@@ -122,7 +185,7 @@ function makeConfigItem(i) {
     var removeBtn = document.createElement("button");
     removeBtn.className   = "btn-remove-config";
     removeBtn.title       = "Remove";
-    removeBtn.textContent = "\u2715";
+    removeBtn.textContent = "✕";
     removeBtn.setAttribute("data-i", i);
     removeBtn.addEventListener("click", function (e) {
       var idx = parseInt(e.currentTarget.getAttribute("data-i"), 10);
@@ -135,91 +198,201 @@ function makeConfigItem(i) {
   div.appendChild(header);
 
   // Algorithm row
-  var algoRow = document.createElement("div");
-  algoRow.className = "form-row";
-  var algoLabel = document.createElement("label");
-  algoLabel.textContent = "Algorithm";
-  var algoSelect = document.createElement("select");
-  algoSelect.className = "cfg-algo";
-  algoSelect.setAttribute("data-i", i);
-  for (var j = 0; j < ALGO_OPTIONS.length; j++) {
-    var opt = document.createElement("option");
-    opt.value       = ALGO_OPTIONS[j].value;
-    opt.textContent = ALGO_OPTIONS[j].label;
-    if (ALGO_OPTIONS[j].value === cfg.algo) opt.selected = true;
-    algoSelect.appendChild(opt);
-  }
-  (function (idx) {
-    algoSelect.addEventListener("change", function (e) {
-      configs[idx].algo = e.target.value;
-      // update visibility of weight/hhat rows
+  div.appendChild(_makeSelectRow("Algorithm", "cfg-algo", i, ALGO_OPTIONS, cfg.algo,
+    function (idx, val) {
+      configs[idx].algo = val;
       var item = configsList.querySelector(".config-item[data-index='" + idx + "']");
       if (item) {
-        item.querySelector(".cfg-weight-row").style.display = needsWeight(configs[idx].algo) ? "" : "none";
-        item.querySelector(".cfg-hhat-row").style.display   = configs[idx].algo === "ees"    ? "" : "none";
+        item.querySelector(".cfg-weight-row").style.display = needsWeight(val) ? "" : "none";
+        item.querySelector(".cfg-hhat-row").style.display   = val === "ees"    ? "" : "none";
       }
       if (canvasItems[idx]) canvasItems[idx].labelEl.textContent = configLabel(configs[idx]);
       resetSession(idx);
-    });
-  }(i));
-  algoRow.appendChild(algoLabel);
-  algoRow.appendChild(algoSelect);
-  div.appendChild(algoRow);
+    }
+  ));
 
   // Weight row
-  var weightRow = document.createElement("div");
-  weightRow.className = "form-row cfg-weight-row";
-  weightRow.style.display = needsWeight(cfg.algo) ? "" : "none";
-  var weightLabel = document.createElement("label");
-  weightLabel.textContent = "Weight w";
-  var weightInput = document.createElement("input");
-  weightInput.type      = "number";
-  weightInput.className = "cfg-weight";
-  weightInput.setAttribute("data-i", i);
-  weightInput.min   = "1.0";
-  weightInput.max   = "10.0";
-  weightInput.step  = "0.05";
-  weightInput.value = cfg.weight;
-  (function (idx) {
-    weightInput.addEventListener("change", function (e) {
-      configs[idx].weight = parseFloat(e.target.value);
+  var weightRow = _makeNumberRow("Weight w", "cfg-weight", i, 1.0, 10.0, 0.05, cfg.weight,
+    function (idx, val) {
+      configs[idx].weight = val;
       if (canvasItems[idx]) canvasItems[idx].labelEl.textContent = configLabel(configs[idx]);
       resetSession(idx);
-    });
-  }(i));
-  weightRow.appendChild(weightLabel);
-  weightRow.appendChild(weightInput);
+    }
+  );
+  weightRow.className += " cfg-weight-row";
+  weightRow.style.display = needsWeight(cfg.algo) ? "" : "none";
   div.appendChild(weightRow);
 
-  // Hhat row
-  var hhatRow = document.createElement("div");
-  hhatRow.className = "form-row cfg-hhat-row";
-  hhatRow.style.display = cfg.algo === "ees" ? "" : "none";
-  var hhatLabel = document.createElement("label");
-  hhatLabel.textContent = "\u0125 inflation";
-  var hhatInput = document.createElement("input");
-  hhatInput.type      = "number";
-  hhatInput.className = "cfg-hhat";
-  hhatInput.setAttribute("data-i", i);
-  hhatInput.min   = "1.0";
-  hhatInput.max   = "5.0";
-  hhatInput.step  = "0.1";
-  hhatInput.value = cfg.hhat;
-  (function (idx) {
-    hhatInput.addEventListener("change", function (e) {
-      configs[idx].hhat = parseFloat(e.target.value);
+  // Hhat row (EES only)
+  var hhatRow = _makeNumberRow("ĥ inflation", "cfg-hhat", i, 1.0, 5.0, 0.1, cfg.hhat,
+    function (idx, val) {
+      configs[idx].hhat = val;
       resetSession(idx);
+    }
+  );
+  hhatRow.className += " cfg-hhat-row";
+  hhatRow.style.display = cfg.algo === "ees" ? "" : "none";
+  div.appendChild(hhatRow);
+
+  // Heuristic row
+  div.appendChild(_makeSelectRow("Heuristic", "cfg-heuristic", i, HEURISTIC_OPTIONS, cfg.heuristic,
+    function (idx, val) {
+      configs[idx].heuristic = val;
+      var item = configsList.querySelector(".config-item[data-index='" + idx + "']");
+      if (item) {
+        item.querySelector(".cfg-custom-row").style.display = val === "custom" ? "" : "none";
+      }
+      if (canvasItems[idx]) canvasItems[idx].labelEl.textContent = configLabel(configs[idx]);
+      resetSession(idx);
+    }
+  ));
+
+  // Custom expression row
+  var customRow = document.createElement("div");
+  customRow.className = "form-row cfg-custom-row";
+  customRow.style.display = cfg.heuristic === "custom" ? "" : "none";
+  customRow.style.flexDirection = "column";
+  customRow.style.alignItems    = "flex-start";
+  customRow.style.gap           = "0.25rem";
+
+  var customLabel = document.createElement("label");
+  customLabel.textContent = "Expression (vars: r, c)";
+  customLabel.style.minWidth = "0";
+
+  var exprWrap = document.createElement("div");
+  exprWrap.className = "expr-wrap";
+
+  var customInput = document.createElement("input");
+  customInput.type        = "text";
+  customInput.placeholder = "e.g. sqrt(r*r + c*c)";
+  customInput.value       = cfg.customExpr || "";
+  customInput.setAttribute("data-i", i);
+
+  var exprTooltip = document.createElement("div");
+  exprTooltip.className = "expr-tooltip";
+
+  exprWrap.appendChild(customInput);
+  exprWrap.appendChild(exprTooltip);
+
+  var customHint = document.createElement("div");
+  customHint.style.fontSize  = "0.7rem";
+  customHint.style.color     = "#6c757d";
+  customHint.textContent     = "vars: r, c  —  sqrt, min, max, abs, floor, ceil, pi";
+
+  function applyValidation(val) {
+    if (!val.trim()) {
+      exprWrap.className = "expr-wrap";
+      return;
+    }
+    var result = validateCustomExpr(val);
+    if (result.valid) {
+      exprWrap.className = "expr-wrap valid";
+    } else {
+      exprTooltip.textContent = result.error;
+      exprWrap.className = "expr-wrap invalid";
+    }
+  }
+
+  configUIRefs[i] = {
+    showExprError: function (msg) {
+      exprTooltip.textContent = msg;
+      exprWrap.className = "expr-wrap invalid";
+    },
+    clearExprError: function () {
+      if (exprWrap.className === "expr-wrap invalid") exprWrap.className = "expr-wrap";
+    },
+  };
+
+  if (cfg.customExpr) applyValidation(cfg.customExpr);
+
+  (function (idx) {
+    customInput.addEventListener("input", function (e) {
+      applyValidation(e.target.value);
+    });
+    customInput.addEventListener("change", function (e) {
+      var val = e.target.value;
+      configs[idx].customExpr = val;
+      if (validateCustomExpr(val).valid) resetSession(idx);
+      // if invalid, keep session intact so the user can fix it before running
     });
   }(i));
-  hhatRow.appendChild(hhatLabel);
-  hhatRow.appendChild(hhatInput);
-  div.appendChild(hhatRow);
+
+  customRow.appendChild(customLabel);
+  customRow.appendChild(exprWrap);
+  customRow.appendChild(customHint);
+  div.appendChild(customRow);
 
   return div;
 }
 
+function _makeSelectRow(labelText, cls, i, options, current, onChange) {
+  var row = document.createElement("div");
+  row.className = "form-row";
+
+  var lbl = document.createElement("label");
+  lbl.textContent = labelText;
+
+  var sel = document.createElement("select");
+  sel.className = cls;
+  sel.setAttribute("data-i", i);
+  for (var j = 0; j < options.length; j++) {
+    var opt = document.createElement("option");
+    opt.value       = options[j].value;
+    opt.textContent = options[j].label;
+    if (options[j].value === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  (function (idx) {
+    sel.addEventListener("change", function (e) { onChange(idx, e.target.value); });
+  }(i));
+
+  row.appendChild(lbl);
+  row.appendChild(sel);
+  return row;
+}
+
+function _makeNumberRow(labelText, cls, i, min, max, step, val, onChange) {
+  var row = document.createElement("div");
+  row.className = "form-row";
+
+  var lbl = document.createElement("label");
+  lbl.textContent = labelText;
+
+  var inp = document.createElement("input");
+  inp.type      = "number";
+  inp.className = cls;
+  inp.setAttribute("data-i", i);
+  inp.min   = String(min);
+  inp.max   = String(max);
+  inp.step  = String(step);
+  inp.value = String(val);
+  (function (idx) {
+    inp.addEventListener("change", function (e) { onChange(idx, parseFloat(e.target.value)); });
+  }(i));
+
+  row.appendChild(lbl);
+  row.appendChild(inp);
+  return row;
+}
+
+function validateCustomExpr(expr) {
+  if (!expr || !expr.trim()) return { valid: false, error: "Expression is empty" };
+  try {
+    var result = Function(
+      "r", "c", "sqrt", "min", "max", "abs", "floor", "ceil", "pi",
+      '"use strict"; return (' + expr + ");")
+    (3, 4, Math.sqrt, Math.min, Math.max, Math.abs, Math.floor, Math.ceil, Math.PI);
+    if (typeof result !== "number") return { valid: false, error: "Must return a number (got " + typeof result + ")" };
+    if (!isFinite(result))          return { valid: false, error: "Must return a finite number (got " + result + ")" };
+    if (result < 0)                 return { valid: false, error: "Heuristic must be ≥ 0 (got " + result + ")" };
+    return { valid: true, error: "" };
+  } catch (e) {
+    return { valid: false, error: e.message };
+  }
+}
+
 function addConfig() {
-  configs.push({ algo: "astar", weight: 1.5, hhat: 1.5 });
+  configs.push({ algo: "astar", weight: 1.5, hhat: 1.5, heuristic: "manhattan", customExpr: "" });
   buildConfigUI();
   rebuildCanvases();
 }
@@ -259,7 +432,7 @@ function rebuildCanvases() {
 
       var metaTextEl = document.createElement("span");
       metaTextEl.className   = "meta-text";
-      metaTextEl.textContent = "Expanded: \u2014 | Cost: \u2014 | Ratio: \u2014";
+      metaTextEl.textContent = "Expanded: — | Cost: — | Ratio: —";
 
       metricsEl.appendChild(statusEl);
       metricsEl.appendChild(metaTextEl);
@@ -269,10 +442,10 @@ function rebuildCanvases() {
       container.appendChild(wrapper);
 
       canvasItems.push({
-        canvas:    canvas,
-        ctx:       canvas.getContext("2d"),
-        labelEl:   labelEl,
-        statusEl:  statusEl,
+        canvas:     canvas,
+        ctx:        canvas.getContext("2d"),
+        labelEl:    labelEl,
+        statusEl:   statusEl,
         metaTextEl: metaTextEl,
       });
     }(i));
@@ -284,13 +457,13 @@ function rebuildCanvases() {
 
 function resizeCanvases() {
   if (!gridData || canvasItems.length === 0) return;
-  var panel   = document.querySelector(".canvas-panel");
-  var panelW  = panel.clientWidth - 40;
-  var n       = canvasItems.length;
-  var gap     = 20;
-  var perW    = n > 1 ? (panelW - (n - 1) * gap) / n : panelW;
-  var maxPx   = Math.min(perW, 600);
-  var cs      = Math.max(10, Math.floor(maxPx / Math.max(gridData.rows, gridData.cols)));
+  var panel  = document.querySelector(".canvas-panel");
+  var panelW = panel.clientWidth - 40;
+  var n      = canvasItems.length;
+  var gap    = 20;
+  var perW   = n > 1 ? (panelW - (n - 1) * gap) / n : panelW;
+  var maxPx  = Math.min(perW, 600);
+  var cs     = Math.max(10, Math.floor(maxPx / Math.max(gridData.rows, gridData.cols)));
   for (var k = 0; k < canvasItems.length; k++) {
     canvasItems[k].canvas.width  = cs * gridData.cols;
     canvasItems[k].canvas.height = cs * gridData.rows;
@@ -304,7 +477,7 @@ function drawAll() {
 function cellSize(i) {
   if (!gridData || !canvasItems[i]) return 30;
   var c = canvasItems[i].canvas;
-  return Math.floor(Math.min(c.width, c.height) / Math.max(gridData.rows, gridData.cols));
+  return Math.floor(Math.min(c.width / gridData.cols, c.height / gridData.rows));
 }
 
 function drawGrid(i) {
@@ -320,7 +493,8 @@ function drawGrid(i) {
   var openMap   = new Map();
   var focalMap  = new Map();
   var closedSet = new Set();
-  var pathSet   = new Set();
+  var foundSet  = new Set();
+  var optSet    = new Set();
 
   if (state) {
     var ol = state.open_list   || [];
@@ -329,8 +503,15 @@ function drawGrid(i) {
     var pl = state.path        || [];
     for (var a = 0; a < ol.length; a++) openMap.set(ol[a][0] + "," + ol[a][1], ol[a][2]);
     for (var b = 0; b < fl.length; b++) focalMap.set(fl[b][0] + "," + fl[b][1], fl[b][2]);
-    for (var c = 0; c < cl.length; c++) closedSet.add(cl[c][0] + "," + cl[c][1]);
-    for (var d = 0; d < pl.length; d++) pathSet.add(pl[d][0] + "," + pl[d][1]);
+    for (var c2 = 0; c2 < cl.length; c2++) closedSet.add(cl[c2][0] + "," + cl[c2][1]);
+    for (var d = 0; d < pl.length; d++) foundSet.add(pl[d][0] + "," + pl[d][1]);
+  }
+
+  // Build optimal path set (from gridData, always available after generate)
+  var showOptimal = (state && state.found && gridData.optimal_path && gridData.optimal_path.length > 0);
+  if (showOptimal) {
+    var op = gridData.optimal_path;
+    for (var e2 = 0; e2 < op.length; e2++) optSet.add(op[e2][0] + "," + op[e2][1]);
   }
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -350,12 +531,30 @@ function drawGrid(i) {
       var fill;
       if (isObs) {
         fill = COLORS.OBSTACLE;
-      } else if (pathSet.has(key)) {
-        fill = isStart ? COLORS.START : isGoal ? COLORS.GOAL : COLORS.PATH;
       } else if (isStart) {
         fill = COLORS.START;
       } else if (isGoal) {
         fill = COLORS.GOAL;
+      } else if (showOptimal) {
+        var inFound = foundSet.has(key);
+        var inOpt   = optSet.has(key);
+        if (inFound && inOpt) {
+          fill = COLORS.PATH;
+        } else if (inFound) {
+          fill = COLORS.PATH_FOUND_ONLY;
+        } else if (inOpt) {
+          fill = COLORS.PATH_OPTIMAL_ONLY;
+        } else if (closedSet.has(key)) {
+          fill = COLORS.CLOSED;
+        } else if (focalMap.has(key)) {
+          fill = COLORS.FOCAL;
+        } else if (openMap.has(key)) {
+          fill = COLORS.OPEN;
+        } else {
+          fill = COLORS.EMPTY;
+        }
+      } else if (foundSet.has(key)) {
+        fill = COLORS.PATH;
       } else if (closedSet.has(key)) {
         fill = COLORS.CLOSED;
       } else if (focalMap.has(key)) {
@@ -378,14 +577,14 @@ function drawGrid(i) {
         ctx.textAlign    = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(isStart ? "S" : "G", x + cs / 2, y + cs / 2);
-      } else if (cs >= 18 && !isObs && !pathSet.has(key)) {
-        var h = focalMap.has(key) ? focalMap.get(key) : (openMap.has(key) ? openMap.get(key) : undefined);
-        if (h !== undefined) {
+      } else if (cs >= 18 && !isObs && !foundSet.has(key) && !optSet.has(key)) {
+        var h2 = focalMap.has(key) ? focalMap.get(key) : (openMap.has(key) ? openMap.get(key) : undefined);
+        if (h2 !== undefined) {
           ctx.fillStyle    = "rgba(0,0,0,0.65)";
           ctx.font         = Math.max(8, Math.floor(cs * 0.33)) + "px monospace";
           ctx.textAlign    = "center";
           ctx.textBaseline = "middle";
-          ctx.fillText(h, x + cs / 2, y + cs / 2);
+          ctx.fillText(h2, x + cs / 2, y + cs / 2);
         }
       }
     }
@@ -398,9 +597,9 @@ function updateMetrics(i, state) {
   var statusEl   = canvasItems[i].statusEl;
   var metaTextEl = canvasItems[i].metaTextEl;
 
-  var expanded = (state.nodes_expanded !== undefined && state.nodes_expanded !== null) ? state.nodes_expanded : "\u2014";
-  var cost     = (state.path_cost > 0) ? state.path_cost.toFixed(1) : "\u2014";
-  var ratio    = (state.subopt_ratio !== null && state.subopt_ratio !== undefined) ? state.subopt_ratio.toFixed(3) : "\u2014";
+  var expanded = (state.nodes_expanded !== undefined && state.nodes_expanded !== null) ? state.nodes_expanded : "—";
+  var cost     = (state.path_cost > 0) ? state.path_cost.toFixed(1) : "—";
+  var ratio    = (state.subopt_ratio !== null && state.subopt_ratio !== undefined) ? state.subopt_ratio.toFixed(3) : "—";
   metaTextEl.textContent = "Expanded: " + expanded + " | Cost: " + cost + " | Ratio: " + ratio;
 
   if (state.found) {
@@ -410,7 +609,7 @@ function updateMetrics(i, state) {
     statusEl.textContent = "No path";
     statusEl.className   = "meta-status status-failed";
   } else {
-    statusEl.textContent = "Searching\u2026";
+    statusEl.textContent = "Searching…";
     statusEl.className   = "meta-status status-running";
   }
 }
@@ -419,7 +618,7 @@ function clearMetrics(i) {
   if (!canvasItems[i]) return;
   canvasItems[i].statusEl.textContent   = "Ready";
   canvasItems[i].statusEl.className     = "meta-status";
-  canvasItems[i].metaTextEl.textContent = "Expanded: \u2014 | Cost: \u2014 | Ratio: \u2014";
+  canvasItems[i].metaTextEl.textContent = "Expanded: — | Cost: — | Ratio: —";
 }
 
 function clearAllMetrics() {
@@ -443,11 +642,11 @@ async function apiFetch(endpoint, body) {
 // ── Actions ───────────────────────────────────────────────────────────────────
 async function onGenerate() {
   stopRunner();
-  btnGenerate.disabled  = true;
-  btnGenerate.textContent = "Generating\u2026";
+  btnGenerate.disabled    = true;
+  btnGenerate.textContent = "Generating…";
 
-  var rows    = parseInt(document.getElementById("inp-rows").value)    || 15;
-  var cols    = parseInt(document.getElementById("inp-cols").value)    || 15;
+  var rows    = parseInt(document.getElementById("inp-rows").value)      || 15;
+  var cols    = parseInt(document.getElementById("inp-cols").value)      || 15;
   var density = parseFloat(document.getElementById("inp-density").value) || 0.28;
   try {
     gridData = await apiFetch("/api/grid/generate", { rows: rows, cols: cols, obstacle_density: density });
@@ -456,7 +655,7 @@ async function onGenerate() {
     alert("Generate error: " + e.message);
   } finally {
     btnGenerate.disabled    = false;
-    btnGenerate.textContent = "\u2726 New Maze";
+    btnGenerate.textContent = "✦ New Maze";
   }
 }
 
@@ -486,7 +685,7 @@ async function onStep() {
     });
     await Promise.all(promises);
   } catch (e) {
-    alert("Step error: " + e.message);
+    if (!e.bubbled) alert("Step error: " + e.message);
   }
 }
 
@@ -500,7 +699,7 @@ async function onRun() {
     btnStop.disabled = false;
     btnRun.disabled  = true;
   } catch (e) {
-    alert("Run error: " + e.message);
+    if (!e.bubbled) alert("Run error: " + e.message);
   }
 }
 
@@ -558,19 +757,44 @@ async function initMissingSessions() {
   await Promise.all(promises);
 }
 
+function _bubbleError(msg) {
+  var e = new Error(msg);
+  e.bubbled = true;
+  return e;
+}
+
 async function initSession(i) {
   if (!gridData) throw new Error("No grid loaded");
-  var cfg   = configs[i];
-  var state = await apiFetch("/api/search/init", {
-    grid_data:      gridData,
-    algorithm:      cfg.algo,
-    weight:         cfg.weight,
-    hhat_inflation: cfg.hhat,
-  });
-  sessions[i].sessionId   = state.session_id;
-  sessions[i].searchState = state;
-  drawGrid(i);
-  updateMetrics(i, state);
+  var cfg = configs[i];
+
+  if (cfg.heuristic === "custom") {
+    var check = validateCustomExpr(cfg.customExpr || "");
+    if (!check.valid) {
+      if (configUIRefs[i]) configUIRefs[i].showExprError(check.error);
+      throw _bubbleError(check.error);
+    }
+  }
+
+  try {
+    var state = await apiFetch("/api/search/init", {
+      grid_data:              gridData,
+      algorithm:              cfg.algo,
+      weight:                 cfg.weight,
+      hhat_inflation:         cfg.hhat,
+      heuristic:              cfg.heuristic,
+      custom_heuristic_expr:  cfg.customExpr || null,
+    });
+    sessions[i].sessionId   = state.session_id;
+    sessions[i].searchState = state;
+    drawGrid(i);
+    updateMetrics(i, state);
+  } catch (e) {
+    if (cfg.heuristic === "custom" && configUIRefs[i]) {
+      configUIRefs[i].showExprError(e.message);
+      throw _bubbleError(e.message);
+    }
+    throw e;
+  }
 }
 
 function stopRunner() {

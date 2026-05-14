@@ -28,7 +28,10 @@ from pydantic import BaseModel, Field
 
 from algorithms import ALGORITHM_MAP
 from algorithms.astar import AStar
-from grid.heuristics import make_dhat, make_hhat, manhattan
+from grid.heuristics import (
+    HEURISTIC_LABELS, HEURISTIC_MAP, make_custom, make_dhat, make_hhat, manhattan,
+)
+from grid.presets import PRESETS
 from grid.world import GridWorld
 
 # ---------------------------------------------------------------------------
@@ -72,9 +75,11 @@ class ToggleRequest(BaseModel):
 
 class SearchConfig(BaseModel):
     grid_data: Dict
-    algorithm: str = "astar"          # key from ALGORITHM_MAP
+    algorithm: str = "astar"
     weight: float = Field(1.5, ge=1.0, le=10.0)
     hhat_inflation: float = Field(1.5, ge=1.0, le=5.0)
+    heuristic: str = "manhattan"
+    custom_heuristic_expr: Optional[str] = None
 
 
 class StepRequest(BaseModel):
@@ -90,13 +95,29 @@ class RunRequest(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _resolve_heuristic(config: SearchConfig):
+    if config.heuristic == "custom":
+        expr = (config.custom_heuristic_expr or "").strip()
+        if not expr:
+            raise HTTPException(status_code=400, detail="custom_heuristic_expr is required for custom heuristic")
+        try:
+            return make_custom(expr)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid heuristic expression: {exc}") from exc
+    h = HEURISTIC_MAP.get(config.heuristic)
+    if h is None:
+        raise HTTPException(status_code=400, detail=f"Unknown heuristic '{config.heuristic}'")
+    return h
+
+
 def _build_algo(config: SearchConfig):
     """Instantiate the requested search algorithm from a SearchConfig."""
-    grid      = config.grid_data["grid"]
-    start     = tuple(config.grid_data["start"])
-    goal      = tuple(config.grid_data["goal"])
-    hhat_fn   = make_hhat(config.hhat_inflation)
-    dhat_fn   = make_dhat(avg_edge_cost=1.0)
+    grid    = config.grid_data["grid"]
+    start   = tuple(config.grid_data["start"])
+    goal    = tuple(config.grid_data["goal"])
+    h_fn    = _resolve_heuristic(config)
+    hhat_fn = make_hhat(config.hhat_inflation, base_h=h_fn)
+    dhat_fn = make_dhat(avg_edge_cost=1.0)
 
     cls = ALGORITHM_MAP.get(config.algorithm)
     if cls is None:
@@ -106,17 +127,17 @@ def _build_algo(config: SearchConfig):
         grid=grid,
         start=start,
         goal=goal,
-        heuristic=manhattan,
+        heuristic=h_fn,
         weight=config.weight,
         hhat_fn=hhat_fn,
         dhat_fn=dhat_fn,
     )
 
 
-def _compute_optimal_cost(grid_data: Dict) -> float:
+def _compute_optimal(grid_data: Dict):
     """
-    Silently run A* to completion and return the optimal path cost.
-    Returns inf if no path exists.
+    Silently run A* (Manhattan) to completion.
+    Returns (path_as_list_of_pairs, cost).  path is [] and cost is inf if no solution.
     """
     grid  = grid_data["grid"]
     start = tuple(grid_data["start"])
@@ -125,10 +146,10 @@ def _compute_optimal_cost(grid_data: Dict) -> float:
     for _ in range(200_000):
         state = algo.step()
         if state.found:
-            return state.path_cost
+            return [list(p) for p in state.path], state.path_cost
         if state.failed:
             break
-    return float("inf")
+    return [], float("inf")
 
 
 def _state_response(session: Dict) -> Dict:
@@ -164,10 +185,11 @@ def generate_grid(cfg: GridConfig) -> Dict:
     """
     world = GridWorld(cfg.rows, cfg.cols, cfg.obstacle_density)
     grid_data = world.generate_random(cfg.seed)
-    optimal_cost = _compute_optimal_cost(grid_data)
+    optimal_path, optimal_cost = _compute_optimal(grid_data)
     return {
         **grid_data,
         "optimal_cost": optimal_cost if optimal_cost < float("inf") else None,
+        "optimal_path": optimal_path,
     }
 
 
@@ -178,10 +200,11 @@ def toggle_cell(req: ToggleRequest) -> Dict:
     world.from_dict(req.grid_data)
     world.toggle_cell(req.row, req.col)
     grid_data = world.to_dict()
-    optimal_cost = _compute_optimal_cost(grid_data)
+    optimal_path, optimal_cost = _compute_optimal(grid_data)
     return {
         **grid_data,
         "optimal_cost": optimal_cost if optimal_cost < float("inf") else None,
+        "optimal_path": optimal_path,
     }
 
 
@@ -194,11 +217,12 @@ def init_search(cfg: SearchConfig) -> Dict:
     algo = _build_algo(cfg)
     sid  = str(uuid.uuid4())
 
-    # Reuse optimal cost embedded in grid_data if frontend passed it,
+    # Reuse optimal info embedded in grid_data if frontend passed it,
     # otherwise compute it now.
     optimal_cost = cfg.grid_data.get("optimal_cost")
+    optimal_path = cfg.grid_data.get("optimal_path")
     if optimal_cost is None:
-        optimal_cost = _compute_optimal_cost(cfg.grid_data)
+        optimal_path, optimal_cost = _compute_optimal(cfg.grid_data)
 
     session: Dict[str, Any] = {
         "session_id":   sid,
@@ -206,8 +230,10 @@ def init_search(cfg: SearchConfig) -> Dict:
         "grid_data":    cfg.grid_data,
         "start_time":   time.time(),
         "optimal_cost": float(optimal_cost) if optimal_cost is not None else float("inf"),
+        "optimal_path": optimal_path or [],
         "algorithm":    cfg.algorithm,
         "weight":       cfg.weight,
+        "heuristic":    cfg.heuristic,
     }
     _sessions[sid] = session
     return _state_response(session)
@@ -240,6 +266,36 @@ def run_search(req: RunRequest) -> Dict:
             break
 
     return _state_response(session)
+
+
+@app.get("/api/grid/presets")
+def list_presets() -> List:
+    """Return metadata for all available preset maps."""
+    return [
+        {"key": k, "label": v["label"], "description": v["description"]}
+        for k, v in PRESETS.items()
+    ]
+
+
+@app.get("/api/grid/preset/{name}")
+def get_preset(name: str) -> Dict:
+    """Return grid data (with optimal path/cost) for a named preset."""
+    entry = PRESETS.get(name)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Unknown preset '{name}'")
+    grid_data = entry["grid_data"]
+    optimal_path, optimal_cost = _compute_optimal(grid_data)
+    return {
+        **grid_data,
+        "optimal_cost": optimal_cost if optimal_cost < float("inf") else None,
+        "optimal_path": optimal_path,
+    }
+
+
+@app.get("/api/grid/heuristics")
+def list_heuristics() -> List:
+    """Return all available named heuristics."""
+    return [{"key": k, "label": v} for k, v in HEURISTIC_LABELS.items()]
 
 
 @app.get("/api/search/state/{session_id}")
